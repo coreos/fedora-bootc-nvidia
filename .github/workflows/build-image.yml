@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         STREAM: [coreos-testing-devel, coreos-stable, 42]
-        NVIDIA_DRIVER_VERSION: [580.95.05]
+        NVIDIA_DRIVER_VERSION: [580.105.08]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
