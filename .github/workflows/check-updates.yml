@@ -1,0 +1,178 @@
+name: Check for updates
+
+on:
+  schedule:
+    # Run every Monday at 8:00 AM UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check-updates:
+    name: Check for NVIDIA driver updates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Read current versions
+        id: current
+        run: |
+          source build-args.conf
+          echo "stream=${STREAM}" >> $GITHUB_OUTPUT
+          echo "driver=${DRIVER_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Get latest Fedora version from NVIDIA
+        id: latest-fedora
+        run: |
+          LATEST_FEDORA=$(curl -s "https://developer.download.nvidia.com/compute/cuda/repos/" | grep -oP 'fedora\d+' | sort -t 'a' -k2 -n | uniq | tail -1 | grep -oP '\d+')
+          echo "version=${LATEST_FEDORA}" >> $GITHUB_OUTPUT
+
+      - name: Get latest NVIDIA driver for current Fedora
+        id: latest-driver-current
+        run: |
+          STREAM="${{ steps.current.outputs.stream }}"
+          LATEST_DRIVER=$(curl -s "https://developer.download.nvidia.com/compute/cuda/repos/fedora${STREAM}/x86_64/" | grep -oP 'kmod-nvidia-open-dkms-\K[0-9.]+(?=-1)' | sort -V | tail -1)
+          echo "version=${LATEST_DRIVER}" >> $GITHUB_OUTPUT
+
+      - name: Get latest NVIDIA driver for latest Fedora
+        id: latest-driver-new
+        run: |
+          LATEST_FEDORA="${{ steps.latest-fedora.outputs.version }}"
+          LATEST_DRIVER=$(curl -s "https://developer.download.nvidia.com/compute/cuda/repos/fedora${LATEST_FEDORA}/x86_64/" | grep -oP 'kmod-nvidia-open-dkms-\K[0-9.]+(?=-1)' | sort -V | tail -1)
+          echo "version=${LATEST_DRIVER}" >> $GITHUB_OUTPUT
+
+      - name: Compare versions and determine update type
+        id: compare
+        run: |
+          CURRENT_STREAM="${{ steps.current.outputs.stream }}"
+          CURRENT_DRIVER="${{ steps.current.outputs.driver }}"
+          LATEST_FEDORA="${{ steps.latest-fedora.outputs.version }}"
+          LATEST_DRIVER_CURRENT="${{ steps.latest-driver-current.outputs.version }}"
+          LATEST_DRIVER_NEW="${{ steps.latest-driver-new.outputs.version }}"
+
+          UPDATE_TYPE="none"
+          NEW_STREAM=""
+          NEW_DRIVER=""
+
+          # Check if new Fedora version is available
+          if [ "$LATEST_FEDORA" -gt "$CURRENT_STREAM" ]; then
+            UPDATE_TYPE="fedora_and_driver"
+            NEW_STREAM="$LATEST_FEDORA"
+            NEW_DRIVER="$LATEST_DRIVER_NEW"
+          # Check if new driver is available for current Fedora
+          elif [ "$LATEST_DRIVER_CURRENT" != "$CURRENT_DRIVER" ]; then
+            # Compare versions properly
+            HIGHER=$(printf '%s\n' "$LATEST_DRIVER_CURRENT" "$CURRENT_DRIVER" | sort -V | tail -1)
+            if [ "$HIGHER" = "$LATEST_DRIVER_CURRENT" ] && [ "$HIGHER" != "$CURRENT_DRIVER" ]; then
+              UPDATE_TYPE="driver_only"
+              NEW_STREAM="$CURRENT_STREAM"
+              NEW_DRIVER="$LATEST_DRIVER_CURRENT"
+            fi
+          fi
+
+          echo "update_type=${UPDATE_TYPE}" >> $GITHUB_OUTPUT
+          echo "new_stream=${NEW_STREAM}" >> $GITHUB_OUTPUT
+          echo "new_driver=${NEW_DRIVER}" >> $GITHUB_OUTPUT
+
+          # Summary for logs
+          echo "### Update Check Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Current | Latest |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Fedora Stream | ${CURRENT_STREAM} | ${LATEST_FEDORA} |" >> $GITHUB_STEP_SUMMARY
+          echo "| NVIDIA Driver (current Fedora) | ${CURRENT_DRIVER} | ${LATEST_DRIVER_CURRENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| NVIDIA Driver (latest Fedora) | - | ${LATEST_DRIVER_NEW} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Update type:** ${UPDATE_TYPE}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check for existing update issue
+        id: check-issue
+        if: steps.compare.outputs.update_type != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_STREAM="${{ steps.compare.outputs.new_stream }}"
+          NEW_DRIVER="${{ steps.compare.outputs.new_driver }}"
+
+          # Search for open issues with the update-available label
+          EXISTING=$(gh issue list --label "update-available" --state open --json title --jq '.[].title' | grep -c "Fedora ${NEW_STREAM}.*${NEW_DRIVER}" || true)
+
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create update issue
+        if: steps.compare.outputs.update_type != 'none' && steps.check-issue.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPDATE_TYPE="${{ steps.compare.outputs.update_type }}"
+          CURRENT_STREAM="${{ steps.current.outputs.stream }}"
+          CURRENT_DRIVER="${{ steps.current.outputs.driver }}"
+          NEW_STREAM="${{ steps.compare.outputs.new_stream }}"
+          NEW_DRIVER="${{ steps.compare.outputs.new_driver }}"
+
+          if [ "$UPDATE_TYPE" = "fedora_and_driver" ]; then
+            TITLE="Update available: Fedora ${NEW_STREAM} with NVIDIA driver ${NEW_DRIVER}"
+            BODY="## New versions detected
+
+          A new Fedora version is now supported by NVIDIA!
+
+          ### Current versions
+          - **Fedora Stream:** ${CURRENT_STREAM}
+          - **NVIDIA Driver:** ${CURRENT_DRIVER}
+
+          ### Available versions
+          - **Fedora Stream:** ${NEW_STREAM}
+          - **NVIDIA Driver:** ${NEW_DRIVER}
+
+          ### Files to update
+          1. \`build-args.conf\`: Update \`STREAM\` and \`DRIVER_VERSION\`
+          2. \`.github/workflows/build-image.yml\`: Update matrix values
+          3. \`README.md\`: Update ARG values in Containerfile example
+
+          ### Suggested commit message
+          \`\`\`
+          Bump to Fedora ${NEW_STREAM} with NVIDIA driver ${NEW_DRIVER}
+          \`\`\`
+
+          ---
+          *This issue was automatically created by the update checker workflow.*"
+          else
+            TITLE="Update available: NVIDIA driver ${NEW_DRIVER}"
+            BODY="## New NVIDIA driver detected
+
+          A new NVIDIA driver version is available for Fedora ${CURRENT_STREAM}!
+
+          ### Current versions
+          - **Fedora Stream:** ${CURRENT_STREAM}
+          - **NVIDIA Driver:** ${CURRENT_DRIVER}
+
+          ### Available versions
+          - **NVIDIA Driver:** ${NEW_DRIVER}
+
+          ### Files to update
+          1. \`build-args.conf\`: Update \`DRIVER_VERSION\`
+          2. \`.github/workflows/build-image.yml\`: Update \`NVIDIA_DRIVER_VERSION\` in matrix
+          3. \`README.md\`: Update \`ARG VERSION\` in Containerfile example
+
+          ### Suggested commit message
+          \`\`\`
+          Update NVIDIA driver to ${NEW_DRIVER}
+          \`\`\`
+
+          ---
+          *This issue was automatically created by the update checker workflow.*"
+          fi
+
+          gh issue create --title "$TITLE" --body "$BODY" --label "update-available"
+
+      - name: Summary when no update
+        if: steps.compare.outputs.update_type == 'none'
+        run: |
+          echo "No updates available. Current versions are up to date." >> $GITHUB_STEP_SUMMARY
