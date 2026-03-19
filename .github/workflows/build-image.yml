@@ -79,3 +79,5 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'schedule'
         run: |
           podman push $FINAL_IMAGE:${{ steps.image-tag.outputs.final_tag }}
+          podman tag $FINAL_IMAGE:${{ steps.image-tag.outputs.final_tag }} $FINAL_IMAGE:${{ steps.image-tag.outputs.tag }}
+          podman push $FINAL_IMAGE:${{ steps.image-tag.outputs.tag }}
