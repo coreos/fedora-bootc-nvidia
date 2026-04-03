@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         STREAM: [43]
-        NVIDIA_DRIVER_VERSION: [595.45.04]
+        NVIDIA_DRIVER_VERSION: [595.58.03]
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
