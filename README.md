@@ -46,7 +46,7 @@ Create a Containerfile to layer the the NVIDIA CUDA driver and libs:
 ```
 cat > Containerfile << 'EOF'
 ARG STREAM=44
-ARG VERSION=610.43.02
+ARG VERSION=615.71.09
 
 FROM quay.io/coreos-devel/fedora-bootc-nvidia:${STREAM}-${VERSION}
 
