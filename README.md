@@ -45,8 +45,8 @@ Boot an existing Image Mode system, for example Fedora CoreOS:
 Create a Containerfile to layer the the NVIDIA CUDA driver and libs:
 ```
 cat > Containerfile << 'EOF'
-ARG STREAM=43
-ARG VERSION=595.71.05
+ARG STREAM=44
+ARG VERSION=610.43.02
 
 FROM quay.io/coreos-devel/fedora-bootc-nvidia:${STREAM}-${VERSION}
 
